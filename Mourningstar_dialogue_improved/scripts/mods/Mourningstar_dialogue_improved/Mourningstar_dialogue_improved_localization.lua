@@ -1,5 +1,5 @@
 local mod = get_mod("Mourningstar_dialogue_improved")
-mod.version = "1.2.11"
+mod.version = "1.3.0"
 mod:info("Mourningstar Dialogue Improved is installed, using version: " .. tostring(mod.version))
 
 local colours = {
@@ -48,7 +48,7 @@ mod.gradientText = function(text, startColor, endColor, colorSpaces)
 		end
 	end
 
-	result = "{#color(" .. colours.title .. ")}" .. result .. "{#reset()}"
+	result = "{#color(" .. colours.title .. ")} " .. result .. "{#reset()}"
 	return result
 end
 
@@ -183,6 +183,18 @@ mod.localisation = {
 		["zh-cn"] = "禁用所有对话？",
 		["zh-tw"] = "停用所有對話？",
 	},
+	show_custom_radio_subtitles = {
+		en = "Show subtitles on custom radio screens?",
+		ru = "Показывать субтитры на экранах пользовательского радио?",
+		["zh-cn"] = "在自定义无线电屏幕上显示字幕？",
+		["zh-tw"] = "在自訂無線電畫面上顯示字幕？",
+	},
+	mourningstar_chatter_spacing = {
+		en = "Mourningstar chatter spacing",
+		ru = "Интервал болтовни в Звезде Скорби",
+		["zh-cn"] = "哀星号对话间隔",
+		["zh-tw"] = "哀星號對話間隔",
+	},
 	general_settings = {
 		en = "{#color(" .. colours.title .. ")}General Settings{#reset()}",
 		ru = "{#color(" .. colours.title .. ")}Общие настройки{#reset()}",
@@ -207,8 +219,19 @@ mod.localisation = {
 		["zh-cn"] = "切换所有NPC对话，包括无线电、玩家角色互动、NPC对话……全部。（单人游戏时可能会出现问题）",
 		["zh-tw"] = "切換所有NPC對話，包括無線電、玩家角色互動、NPC對話……全部。（單人遊戲時可能會出現問題）",
 	},
+	show_custom_radio_subtitles_tooltip = {
+		en = "Displays subtitles on the screens where custom radio chatter appears, if subtitles are enabled in the game settings.",
+		ru = "Отображает субтитры на экранах, где появляется пользовательское радио, если субтитры включены в настройках игры.",
+		["zh-cn"] = "在显示自定义无线电对话的屏幕上（若游戏设置中已启用字幕）显示字幕。",
+		["zh-tw"] = "在顯示自訂無線電對話的畫面上（若遊戲設定中已啟用字幕）顯示字幕。",
+	},
+	mourningstar_chatter_spacing_tooltip = {
+		en = "Lets you add more delay between ambient Mourningstar chatter lines.",
+		ru = "Регулирует время между репликами окружающих в Звезде Скорби.",
+		["zh-cn"] = "控制哀星号环境中对话之间的间隔时间。",
+		["zh-tw"] = "控制哀星號環境對白之間的間隔時間。",
+	},
 }
-
 mod.toggle_pizazz = function()
 	for key, values in pairs(mod.localisation) do
 		if key == "mod_name" then
