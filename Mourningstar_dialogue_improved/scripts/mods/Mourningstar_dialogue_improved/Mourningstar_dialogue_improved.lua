@@ -266,7 +266,7 @@ DialogueSystem._play_dialogue_event_implementation = function(
 		self._dialogue_system_subtitle:add_playing_localized_dialogue(speaker_name, dialogue)
 	end
 
-	if is_sequence == true then
+	if game_mode_name == "hub" and is_sequence == true then
 		mod.updateCustomRadio(self)
 	end
 end
@@ -412,7 +412,9 @@ mod.updateCheck = function(self, dt)
 	-- Be defensive during state transitions (e.g. loading screens), where managers/systems
 	-- may be unavailable or half-initialized. Never let a transient nil break the update loop.
 	local game_mode_manager = Managers.state and Managers.state.game_mode
-	if not game_mode_manager then
+	local game_mode_name = game_mode_manager and game_mode_manager:game_mode_name()
+
+	if not game_mode_manager or game_mode_name ~= "hub" then
 		mod.playing_dialogue = nil
 		mod.game_subtitles_widgets = nil
 		mod.hideCustomRadio()
@@ -475,8 +477,11 @@ mod.updateCustomRadio = function(self, dt)
 		end
 	end
 
+	local game_mode_manager = Managers.state and Managers.state.game_mode
+	local game_mode_name = game_mode_manager and game_mode_manager:game_mode_name()
+
 	if instance then
-		if mod.playing_dialogue and mod.playing_dialogue ~= nil then
+		if game_mode_name == "hub" and mod.playing_dialogue and mod.playing_dialogue ~= nil then
 			local speaker_name = mod.playing_dialogue.speaker_name
 			local mission_giver_icon
 			local mission_giver_full_name_localized
@@ -552,6 +557,12 @@ local UIFontSettings = require("scripts/managers/ui/ui_font_settings")
 mod.updatetimer = 0
 
 mod.customradio_update_widget = function(name_text, icon, dt)
+	local game_mode_manager = Managers.state and Managers.state.game_mode
+	local game_mode_name = game_mode_manager and game_mode_manager:game_mode_name()
+	if game_mode_name ~= "hub" then
+		return
+	end
+
 	local instance = nil
 	if Managers.ui and Managers.ui.active_top_view then
 		local active_top_view = Managers.ui:active_top_view()
@@ -1281,7 +1292,10 @@ mod:hook(
 			local widgets_by_name = self._widgets_by_name
 			local subtitle_text = ""
 
-			if mod.playing_dialogue and mod:get("show_custom_radio_subtitles") ~= false then
+			local game_mode_manager = Managers.state and Managers.state.game_mode
+			local game_mode_name = game_mode_manager and game_mode_manager:game_mode_name()
+
+			if game_mode_name == "hub" and mod.playing_dialogue and mod:get("show_custom_radio_subtitles") ~= false then
 				local save_data = Managers.save and Managers.save:account_data()
 				local interface_settings = save_data and save_data.interface_settings
 				local subtitles_enabled = interface_settings and interface_settings.subtitle_enabled
