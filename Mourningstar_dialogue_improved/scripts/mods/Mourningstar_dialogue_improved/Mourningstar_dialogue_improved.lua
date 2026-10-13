@@ -19,13 +19,20 @@ local DialogueSpeakerVoiceSettings = require("scripts/settings/dialogue/dialogue
 local player_manager = Managers.player
 
 local function _dialogue_extension()
+	if not player_manager or not player_manager.local_player then
+		return
+	end
+
 	local player = player_manager:local_player(1)
 
 	if player == nil or player.player_unit == nil then
 		return
 	end
 
-	local dialogue_extension = ScriptUnit.extension(player.player_unit, "dialogue_system")
+	local ok, dialogue_extension = pcall(ScriptUnit.extension, player.player_unit, "dialogue_system")
+	if not ok then
+		return
+	end
 
 	return dialogue_extension
 end
@@ -35,7 +42,7 @@ local function _play_selected_sound_event(self, extension, sound_event, dialogue
 
 	-- Do not play dialogue if the player is in a cutscene. (prevents overlapping audio issues)
 	local ui_manager = Managers.ui
-	local active_views = ui_manager:active_views()
+	local active_views = ui_manager and ui_manager:active_views() or {}
 
 	for i, view in pairs(active_views) do
 		if view == "cutscene_view" or view == "video_view" then
@@ -44,7 +51,8 @@ local function _play_selected_sound_event(self, extension, sound_event, dialogue
 	end
 
 	if custom_extension then
-		local game_mode_name = Managers.state.game_mode:game_mode_name()
+		local game_mode_name = (Managers.state and Managers.state.game_mode)
+			and Managers.state.game_mode:game_mode_name()
 
 		-- remove any dialogue filters from player's helmet (janky but works ;))
 		custom_extension._voice_fx_preset = 0
@@ -74,8 +82,10 @@ DialogueSystem._play_dialogue_event_implementation = function(
 	dialogue_rule_index,
 	optional_query
 )
+	local game_mode_manager = Managers.state and Managers.state.game_mode
+	local game_mode_name = game_mode_manager and game_mode_manager:game_mode_name()
+
 	-- disable dialog completely if wanted...
-	local game_mode_name = Managers.state.game_mode:game_mode_name()
 	if
 		game_mode_name == "hub" and mod:get("disable_mourningstar_chatter") == true
 		or mod:get("disable_all_chatter") == true
@@ -98,7 +108,10 @@ DialogueSystem._play_dialogue_event_implementation = function(
 	end
 
 	local dialogue_name = NetworkLookup.dialogue_names[dialogue_id]
-	local dialogue_template = self._dialogue_templates[dialogue_name]
+	local dialogue_template = self._dialogue_templates and self._dialogue_templates[dialogue_name]
+	if not dialogue_template then
+		return
+	end
 	local dialogue_category = dialogue_template.category
 
 	-- filter out start of mission radio chatter
@@ -258,13 +271,14 @@ DialogueSystem._play_dialogue_event_implementation = function(
 	end
 end
 
--- Cleanup dialogue and UI on mission load to prevent infinite loading screens (hopefully)
+-- Cleanup dialogue and UI on mission load to prevent infinite loading screens.
 mod:hook_safe(CLASS.StateLoading, "on_enter", function(self, ...)
 	local dialogue_extension = _dialogue_extension()
 	if dialogue_extension and dialogue_extension:is_currently_playing_dialogue() then
 		dialogue_extension:stop_currently_playing_vo()
 	end
 	mod.playing_dialogue = nil
+	mod.game_subtitles_widgets = nil
 	mod.hideCustomRadio()
 end)
 
@@ -346,7 +360,8 @@ local function _is_valid_custom_radio_speaker(speaker_name)
 end
 
 local function _game_subtitles_widgets()
-	local uce = Managers.ui and Managers.ui._ui_constant_elements
+	local ui_manager = Managers and Managers.ui
+	local uce = ui_manager and ui_manager._ui_constant_elements
 	local elem = uce and uce._elements and uce._elements.ConstantElementSubtitles
 	return elem and elem._widgets_by_name
 end
@@ -354,7 +369,7 @@ end
 local function _game_subtitles_widgets_cached()
 	local cached = mod.game_subtitles_widgets
 
-	if not (cached and cached.subtitles) then
+	if not (cached and cached.subtitles and cached.subtitles.content) then
 		cached = _game_subtitles_widgets()
 		mod.game_subtitles_widgets = cached
 	end
@@ -389,18 +404,28 @@ mod:hook_safe(CLASS.DialogueSystem, "update", function(self, context, dt, t)
 			self._next_npc_story_line_update_t = t + spacing
 		end
 
-		if changed then
-			mod:info("Mourningstar chatter spacing set to " .. tostring(spacing))
-		end
-
 		mod._last_mourningstar_chatter_spacing = spacing
 	end
 end)
 
 mod.updateCheck = function(self, dt)
-	if not mod.playing_dialogue and self._playing_dialogues_array and #self._playing_dialogues_array > 0 then
-		mod.playing_dialogue = self._playing_dialogues_array[1]
-		mod.playing_dialogue.dialogue_timer = mod.playing_dialogue.dialogue_timer or 4
+	-- Be defensive during state transitions (e.g. loading screens), where managers/systems
+	-- may be unavailable or half-initialized. Never let a transient nil break the update loop.
+	local game_mode_manager = Managers.state and Managers.state.game_mode
+	if not game_mode_manager then
+		mod.playing_dialogue = nil
+		mod.game_subtitles_widgets = nil
+		mod.hideCustomRadio()
+		return
+	end
+
+	local playing_dialogues_array = self._playing_dialogues_array or {}
+
+	if not mod.playing_dialogue and #playing_dialogues_array > 0 then
+		mod.playing_dialogue = playing_dialogues_array[1]
+		if mod.playing_dialogue then
+			mod.playing_dialogue.dialogue_timer = mod.playing_dialogue.dialogue_timer or 4
+		end
 	end
 
 	mod.hideCustomRadio()
@@ -419,9 +444,10 @@ mod.updateCheck = function(self, dt)
 			mod.playing_dialogue.dialogue_timer = mod.playing_dialogue.dialogue_timer - (dt / 3)
 
 			if mod.playing_dialogue.dialogue_timer <= 0 then
-				-- remove finished dialogue subtitles
-				self:_remove_stopped_dialogue(mod.playing_dialogue.currently_playing_unit, mod.playing_dialogue)
-
+				-- Let the base dialogue system own removal of stopped dialogues; calling
+				-- _remove_stopped_dialogue again here could corrupt the playing-dialogues
+				-- array (table.remove with a missing index drops the last entry), which
+				-- has been observed to stall loading screens.
 				mod.playing_dialogue = nil
 				mod.hideCustomRadio()
 			end
@@ -434,10 +460,19 @@ mod.updateCheck = function(self, dt)
 end
 
 mod.updateCustomRadio = function(self, dt)
-	local instance = Managers.ui:view_instance(Managers.ui:active_top_view())
+	local playing_dialogues_array = self._playing_dialogues_array or {}
+	local instance = nil
 
-	if #self._playing_dialogues_array > 0 then
-		mod.playing_dialogue = self._playing_dialogues_array[1]
+	if Managers.ui and Managers.ui.active_top_view then
+		local active_top_view = Managers.ui:active_top_view()
+		instance = active_top_view and Managers.ui:view_instance(active_top_view)
+	end
+
+	if #playing_dialogues_array > 0 then
+		mod.playing_dialogue = playing_dialogues_array[1]
+		if mod.playing_dialogue then
+			mod.playing_dialogue.dialogue_timer = mod.playing_dialogue.dialogue_timer or 4
+		end
 	end
 
 	if instance then
@@ -483,7 +518,8 @@ mod.showCustomRadio = function()
 end
 
 mod.hideCustomRadio = function()
-	local active_views = Managers.ui:active_views()
+	local ui_manager = Managers and Managers.ui
+	local active_views = ui_manager and ui_manager:active_views() or {}
 
 	for i, view in pairs(active_views) do
 		local instance = Managers.ui:view_instance(view)
@@ -516,7 +552,11 @@ local UIFontSettings = require("scripts/managers/ui/ui_font_settings")
 mod.updatetimer = 0
 
 mod.customradio_update_widget = function(name_text, icon, dt)
-	local instance = Managers.ui:view_instance(Managers.ui:active_top_view())
+	local instance = nil
+	if Managers.ui and Managers.ui.active_top_view then
+		local active_top_view = Managers.ui:active_top_view()
+		instance = active_top_view and Managers.ui:view_instance(active_top_view)
+	end
 
 	if instance and name_text then
 		local widgets_by_name = instance._widgets_by_name
@@ -538,6 +578,10 @@ mod.customradio_update_widget = function(name_text, icon, dt)
 			for i = 1, num_bars do
 				local name = "custom_radio_bar_" .. i
 				local widget = widgets_by_name[name]
+
+				if not widget then
+					break
+				end
 
 				widget.offset = {
 					bar_offset[1] - (bar_size[1] + bar_spacing) * (i - 1),

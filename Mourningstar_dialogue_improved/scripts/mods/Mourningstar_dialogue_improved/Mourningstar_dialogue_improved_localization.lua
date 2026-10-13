@@ -1,5 +1,5 @@
 local mod = get_mod("Mourningstar_dialogue_improved")
-mod.version = "1.3.0"
+mod.version = "1.3.1"
 mod:info("Mourningstar Dialogue Improved is installed, using version: " .. tostring(mod.version))
 
 local colours = {
