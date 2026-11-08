@@ -1,4 +1,9 @@
 local mod = get_mod("Mourningstar_dialogue_improved")
+mod.enabled = mod:is_enabled()
+
+mod:io_dofile(
+	"Mourningstar_dialogue_improved/scripts/mods/Mourningstar_dialogue_improved/utils/custom_radio_definitions"
+)
 
 local DialogueBreedSettings = require("scripts/settings/dialogue/dialogue_breed_settings")
 local DialogueCategoryConfig = require("scripts/settings/dialogue/dialogue_category_config")
@@ -9,14 +14,24 @@ local DialogueSettings = require("scripts/settings/dialogue/dialogue_settings")
 local DialogueSystemSubtitle = require("scripts/extension_systems/dialogue/dialogue_system_subtitle")
 local DialogueSystemWwise = require("scripts/extension_systems/dialogue/dialogue_system_wwise")
 local NetworkLookup = require("scripts/network_lookup/network_lookup")
-
+local WwiseGameSyncSettings = require("scripts/settings/wwise_game_sync/wwise_game_sync_settings")
+local HudElementMissionSpeakerPopupDefinitions =
+	require("scripts/ui/hud/elements/mission_speaker_popup/hud_element_mission_speaker_popup_definitions")
+local HudElementMissionSpeakerPopupSettings =
+	require("scripts/ui/hud/elements/mission_speaker_popup/hud_element_mission_speaker_popup_settings")
+local UIWidget = require("scripts/managers/ui/ui_widget")
+local UIHudSettings = require("scripts/settings/ui/ui_hud_settings")
+local UIFontSettings = require("scripts/managers/ui/ui_font_settings")
 local DialogueSystem = require("scripts/extension_systems/dialogue/dialogue_system")
-
 local HudElementMissionSpeakerPopup =
 	require("scripts/ui/hud/elements/mission_speaker_popup/hud_element_mission_speaker_popup")
 local DialogueSpeakerVoiceSettings = require("scripts/settings/dialogue/dialogue_speaker_voice_settings")
 
 local player_manager = Managers.player
+
+mod.showRadio = false
+mod.playing_dialogue = nil
+mod.subtitle_active = false
 
 local function _dialogue_extension()
 	if not player_manager or not player_manager.local_player then
@@ -35,6 +50,31 @@ local function _dialogue_extension()
 	end
 
 	return dialogue_extension
+end
+
+local function _rule_concept(rule)
+	local criterias = rule and rule.criterias
+	local first_criteria = criterias and criterias[1]
+
+	return first_criteria and first_criteria[4]
+end
+
+local function _is_heard_speak_rule(rule)
+	return _rule_concept(rule) == "heard_speak"
+end
+
+local function _game_time()
+	local time_manager = Managers and Managers.time
+
+	if not time_manager then
+		return
+	end
+
+	local ok, time = pcall(time_manager.time, time_manager, "gameplay")
+
+	if ok then
+		return time
+	end
 end
 
 local function _play_selected_sound_event(self, extension, sound_event, dialogue)
@@ -69,6 +109,43 @@ local function _play_selected_sound_event(self, extension, sound_event, dialogue
 		}
 
 		custom_extension:play_event(vo_event)
+	end
+end
+
+mod.updateCustomRadio = function(self, dt)
+	local playing_dialogues_array = self._playing_dialogues_array or {}
+	local instance = nil
+
+	if Managers.ui and Managers.ui.active_top_view then
+		local active_top_view = Managers.ui:active_top_view()
+		instance = active_top_view and Managers.ui:view_instance(active_top_view)
+	end
+
+	local game_mode_manager = Managers.state and Managers.state.game_mode
+	local game_mode_name = game_mode_manager and game_mode_manager:game_mode_name()
+
+	if instance then
+		if game_mode_name == "hub" and mod.playing_dialogue and mod.playing_dialogue ~= nil then
+			mod.showRadio = true
+
+			local speaker_name = mod.playing_dialogue.speaker_name
+			local mission_giver_icon
+			local mission_giver_full_name_localized
+
+			if speaker_name then
+				local speaker_voice_settings = DialogueSpeakerVoiceSettings[speaker_name]
+				mission_giver_icon = speaker_voice_settings and speaker_voice_settings.icon
+				local mission_giver_full_name = speaker_voice_settings and speaker_voice_settings.full_name
+					or "++REDACTED++"
+				if mission_giver_full_name then
+					mission_giver_full_name_localized = instance:_localize(mission_giver_full_name)
+				end
+			end
+
+			mod.customradio_update_widget(mission_giver_full_name_localized, mission_giver_icon, dt)
+		else
+			mod.customradio_update_widget(nil, nil, dt)
+		end
 	end
 end
 
@@ -131,6 +208,30 @@ DialogueSystem._play_dialogue_event_implementation = function(
 		return
 	end
 
+	local rule = self._tagquery_database:get_rule(dialogue_rule_index)
+
+	if rule and self._heard_speak_disabled then
+		if _rule_concept(rule) == "heard_speak" then
+			--return
+		else
+			self._heard_speak_disabled = false
+		end
+	end
+
+	--[[if game_mode_name == "hub" and rule and not _is_heard_speak_rule(rule) then
+		local spacing = mod:get("mourningstar_chatter_spacing")
+
+		if spacing then
+			local now = _game_time()
+
+			if now and mod._last_hub_chatter_time and (now - mod._last_hub_chatter_time) < spacing then
+				return
+			end
+
+			mod._last_hub_chatter_time = now
+		end
+	end]]
+
 	local is_currently_playing_dialogue = extension:is_currently_playing_dialogue()
 
 	if is_currently_playing_dialogue then
@@ -139,7 +240,6 @@ DialogueSystem._play_dialogue_event_implementation = function(
 
 	local sound_event, subtitles_event, sound_event_duration =
 		extension:get_dialogue_event(dialogue_name, dialogue_index)
-	local rule = self._tagquery_database:get_rule(dialogue_rule_index)
 	local is_sequence
 
 	if sound_event then
@@ -179,18 +279,6 @@ DialogueSystem._play_dialogue_event_implementation = function(
 			return
 		end
 
-		if game_mode_name == "hub" then
-			local spacing = mod:get("mourningstar_chatter_spacing")
-
-			if spacing and mod._last_hub_chatter_time and (os.clock() - mod._last_hub_chatter_time) < spacing then
-				return
-			end
-
-			if spacing then
-				mod._last_hub_chatter_time = os.clock()
-			end
-		end
-
 		if rule and (rule.pre_wwise_event or rule.post_wwise_event) then
 			dialogue.dialogue_sequence = self:_create_sequence_events_table(
 				rule.pre_wwise_event,
@@ -203,9 +291,7 @@ DialogueSystem._play_dialogue_event_implementation = function(
 			local instance = Managers.ui:view_instance(Managers.ui:active_top_view())
 			local game_mode_name = Managers.state.game_mode:game_mode_name()
 
-			if
-				game_mode_name == "hub" --[[and instance]]
-			then
+			if game_mode_name == "hub" then
 				dialogue.currently_playing_event_id = _play_selected_sound_event(self, extension, sound_event, dialogue)
 			else
 				dialogue.currently_playing_event_id = extension:play_event(dialogue.dialogue_sequence[1])
@@ -248,17 +334,19 @@ DialogueSystem._play_dialogue_event_implementation = function(
 
 	self._playing_units[dialogue_actor_unit] = extension
 	dialogue.currently_playing_unit = dialogue_actor_unit
-	dialogue.dialogue_timer = sound_event_duration
+	dialogue.dialogue_timer = sound_event_duration or 3
 	dialogue.currently_playing_subtitle = subtitles_event
 	dialogue.used_query = optional_query
 
 	extension:set_is_currently_playing_dialogue(true)
-
 	local category_config = DialogueCategoryConfig[dialogue_category]
 
 	self._playing_dialogues[dialogue] = category_config
 
 	table.insert(self._playing_dialogues_array, 1, dialogue)
+
+	dialogue.dialogue_start_time = Managers.time and Managers.time:time("main")
+	mod.playing_dialogue = dialogue
 
 	local sequence_table = dialogue.dialogue_sequence
 
@@ -277,12 +365,7 @@ mod:hook_safe(CLASS.StateLoading, "on_enter", function(self, ...)
 	if dialogue_extension and dialogue_extension:is_currently_playing_dialogue() then
 		dialogue_extension:stop_currently_playing_vo()
 	end
-	mod.playing_dialogue = nil
-	mod.game_subtitles_widgets = nil
-	mod.hideCustomRadio()
 end)
-
-mod.playing_dialogue = nil
 
 local function _apply_custom_subtitle_style(widgets_by_name, interface_settings, ui_renderer, text)
 	local TextUtils = require("scripts/utilities/ui/text")
@@ -330,17 +413,13 @@ local function _apply_custom_subtitle_style(widgets_by_name, interface_settings,
 			if background_widget then
 				background_widget.style.rect.size[1] = math.ceil(longest_width + width_padding)
 				background_widget.style.rect.size[2] = math.ceil(total_height + height_padding)
+				local color = background_widget.style.rect.color
+				color[1] = math.floor(
+					255 * ((interface_settings and interface_settings.subtitle_background_opacity or 100) * 0.01)
+				)
 			end
 		end
-	end
 
-	if background_widget then
-		local color = background_widget.style.rect.color
-		color[1] =
-			math.floor(255 * ((interface_settings and interface_settings.subtitle_background_opacity or 100) * 0.01))
-	end
-
-	if subtitle_widget then
 		subtitle_widget._custom_subtitle_style_fingerprint = fingerprint
 	end
 end
@@ -359,25 +438,14 @@ local function _is_valid_custom_radio_speaker(speaker_name)
 	return Managers.localization:exists(vs.full_name)
 end
 
-local function _game_subtitles_widgets()
-	local ui_manager = Managers and Managers.ui
-	local uce = ui_manager and ui_manager._ui_constant_elements
-	local elem = uce and uce._elements and uce._elements.ConstantElementSubtitles
-	return elem and elem._widgets_by_name
-end
-
-local function _game_subtitles_widgets_cached()
-	local cached = mod.game_subtitles_widgets
-
-	if not (cached and cached.subtitles and cached.subtitles.content) then
-		cached = _game_subtitles_widgets()
-		mod.game_subtitles_widgets = cached
+mod:hook_safe(CLASS.DialogueSystem, "update", function(self, context, dt, t)
+	self._next_update = self._next_update or 0
+	if t < self._next_update then
+		return
 	end
 
-	return cached
-end
+	self._next_update = t + 0.1
 
-mod:hook_safe(CLASS.DialogueSystem, "update", function(self, context, dt, t)
 	mod.updateCheck(self, dt)
 
 	local game_mode_manager = Managers.state and Managers.state.game_mode
@@ -387,7 +455,7 @@ mod:hook_safe(CLASS.DialogueSystem, "update", function(self, context, dt, t)
 		return
 	end
 
-	local spacing = mod:get("mourningstar_chatter_spacing")
+	--[[local spacing = mod:get("mourningstar_chatter_spacing")
 
 	if spacing then
 		if not self._mission_settings_override then
@@ -405,64 +473,23 @@ mod:hook_safe(CLASS.DialogueSystem, "update", function(self, context, dt, t)
 		end
 
 		mod._last_mourningstar_chatter_spacing = spacing
-	end
+	end]]
 end)
 
-mod.updateCheck = function(self, dt)
-	-- Be defensive during state transitions (e.g. loading screens), where managers/systems
-	-- may be unavailable or half-initialized. Never let a transient nil break the update loop.
-	local game_mode_manager = Managers.state and Managers.state.game_mode
-	local game_mode_name = game_mode_manager and game_mode_manager:game_mode_name()
-
-	if not game_mode_manager or game_mode_name ~= "hub" then
-		mod.playing_dialogue = nil
-		mod.game_subtitles_widgets = nil
-		mod.hideCustomRadio()
-		return
-	end
-
-	local playing_dialogues_array = self._playing_dialogues_array or {}
-
-	if not mod.playing_dialogue and #playing_dialogues_array > 0 then
-		mod.playing_dialogue = playing_dialogues_array[1]
-		if mod.playing_dialogue then
-			mod.playing_dialogue.dialogue_timer = mod.playing_dialogue.dialogue_timer or 4
-		end
-	end
-
-	mod.hideCustomRadio()
-
-	if mod.playing_dialogue and not _is_valid_custom_radio_speaker(mod.playing_dialogue.speaker_name) then
-		mod.playing_dialogue = nil
-
-		return
-	end
-
-	if mod.playing_dialogue then
-		mod.showCustomRadio()
-		mod.playing_dialogue.dialogue_timer = mod.playing_dialogue.dialogue_timer or 4
-
-		if mod.playing_dialogue.dialogue_timer then
-			mod.playing_dialogue.dialogue_timer = mod.playing_dialogue.dialogue_timer - (dt / 3)
-
-			if mod.playing_dialogue.dialogue_timer <= 0 then
-				-- Let the base dialogue system own removal of stopped dialogues; calling
-				-- _remove_stopped_dialogue again here could corrupt the playing-dialogues
-				-- array (table.remove with a missing index drops the last entry), which
-				-- has been observed to stall loading screens.
-				mod.playing_dialogue = nil
-				mod.hideCustomRadio()
-			end
-
-			mod.updateCustomRadio(self, dt)
-		end
-	else
-		mod.hideCustomRadio()
-	end
+function mod.on_disabled()
+	mod.enabled = mod:is_enabled()
+	mod.showRadio = false
 end
 
-mod.updateCustomRadio = function(self, dt)
-	local playing_dialogues_array = self._playing_dialogues_array or {}
+function mod.on_enabled()
+	mod.enabled = mod:is_enabled()
+	mod.showRadio = false
+	mod.subtitle_active = false
+end
+
+dbg_mdi = mod
+
+mod.updateCustomSubtitles = function(self, dt)
 	local instance = nil
 
 	if Managers.ui and Managers.ui.active_top_view then
@@ -470,91 +497,166 @@ mod.updateCustomRadio = function(self, dt)
 		instance = active_top_view and Managers.ui:view_instance(active_top_view)
 	end
 
-	if #playing_dialogues_array > 0 then
-		mod.playing_dialogue = playing_dialogues_array[1]
-		if mod.playing_dialogue then
-			mod.playing_dialogue.dialogue_timer = mod.playing_dialogue.dialogue_timer or 4
-		end
-	end
-
-	local game_mode_manager = Managers.state and Managers.state.game_mode
-	local game_mode_name = game_mode_manager and game_mode_manager:game_mode_name()
-
-	if instance then
-		if game_mode_name == "hub" and mod.playing_dialogue and mod.playing_dialogue ~= nil then
-			local speaker_name = mod.playing_dialogue.speaker_name
-			local mission_giver_icon
-			local mission_giver_full_name_localized
-
-			if speaker_name then
-				local speaker_voice_settings = DialogueSpeakerVoiceSettings[speaker_name]
-				mission_giver_icon = speaker_voice_settings and speaker_voice_settings.icon
-				local mission_giver_full_name = speaker_voice_settings and speaker_voice_settings.full_name
-					or "++REDACTED++"
-				if mission_giver_full_name then
-					mission_giver_full_name_localized = instance:_localize(mission_giver_full_name)
-				end
-			end
-
-			mod.customradio_update_widget(mission_giver_full_name_localized, mission_giver_icon, dt)
-		else
-			mod.customradio_update_widget(nil, nil, dt)
-		end
-	end
-end
-
-mod.showCustomRadio = function()
-	local instance = Managers.ui:view_instance(Managers.ui:active_top_view())
-
 	if instance then
 		local widgets_by_name = instance._widgets_by_name
+		if widgets_by_name and widgets_by_name.custom_radio_subtitle then
+			local subtitle_text = ""
 
-		if widgets_by_name then
-			for name, widget in pairs(widgets_by_name) do
-				if
-					widget.scenegraph_id == "custom_radio_background"
-					or widget.scenegraph_id == "custom_radio_subtitle"
-				then
-					widget.visible = true
-				end
-			end
-		end
-	end
-end
+			local game_mode_manager = Managers.state and Managers.state.game_mode
+			local game_mode_name = game_mode_manager and game_mode_manager:game_mode_name()
 
-mod.hideCustomRadio = function()
-	local ui_manager = Managers and Managers.ui
-	local active_views = ui_manager and ui_manager:active_views() or {}
+			if game_mode_name == "hub" and mod.playing_dialogue and mod:get("show_custom_radio_subtitles") ~= false then
+				local save_data = Managers.save and Managers.save:account_data()
+				interface_settings = save_data and save_data.interface_settings or interface_settings
+				local subtitles_enabled = interface_settings and interface_settings.subtitle_enabled
+				local speaker_enabled = interface_settings and interface_settings.subtitle_speaker_enabled
 
-	for i, view in pairs(active_views) do
-		local instance = Managers.ui:view_instance(view)
-		if instance then
-			local widgets_by_name = instance._widgets_by_name
+				if subtitles_enabled then
+					local dialogue = mod.playing_dialogue
+					local subtitle_key = dialogue.currently_playing_subtitle
+					local speaker_name = dialogue.speaker_name
 
-			if widgets_by_name then
-				for name, widget in pairs(widgets_by_name) do
-					if
-						widget.scenegraph_id == "custom_radio_background"
-						or widget.scenegraph_id == "custom_radio_subtitle"
-					then
-						widget.visible = false
+					local localized_subtitle
+
+					if subtitle_key and subtitle_key ~= "" then
+						local no_cache = true
+						local exists = Managers.localization:exists(subtitle_key)
+
+						if exists then
+							localized_subtitle = Managers.localization:localize(subtitle_key, no_cache)
+						end
+					end
+
+					if localized_subtitle and localized_subtitle ~= "" then
+						local speaker_display_name
+
+						if speaker_name then
+							local speaker_voice_settings = DialogueSpeakerVoiceSettings[speaker_name]
+							local short_name = speaker_voice_settings and speaker_voice_settings.short_name
+
+							if short_name then
+								speaker_display_name = Managers.localization:localize(short_name)
+							end
+						end
+
+						local subtitle_format_context = {
+							speaker = speaker_display_name,
+							subtitle = localized_subtitle,
+						}
+
+						local format_key = "loc_subtitle_speaker_format"
+
+						if not speaker_enabled or not speaker_display_name then
+							format_key = "loc_subtitle_speaker_format_speakerless"
+							subtitle_format_context.speaker = nil
+						end
+
+						if Managers.localization:exists(format_key) then
+							subtitle_text = Managers.localization:localize(format_key, true, subtitle_format_context)
+						else
+							if speaker_display_name then
+								subtitle_text = speaker_display_name .. ": " .. localized_subtitle
+							else
+								subtitle_text = localized_subtitle
+							end
+						end
 					end
 				end
 			end
+
+			widgets_by_name.custom_radio_subtitle.content.custom_radio_subtitle = subtitle_text
+
+			local game_subtitle_text = ""
+			local game_subtitles_widgets = mod.get_game_subtitles_widget()
+
+			if
+				game_subtitles_widgets
+				and game_subtitles_widgets.subtitles
+				and game_subtitles_widgets.subtitles.content
+			then
+				game_subtitle_text = game_subtitles_widgets.subtitles.content.text or ""
+			end
+
+			local game_subtitles_on = (#game_subtitle_text > 1) or subtitles_enabled == true or subtitles_enabled == 1
+			local show_subtitle = subtitle_text ~= "" and not game_subtitles_on
+
+			widgets_by_name.custom_radio_subtitle.content.custom_radio_subtitle = show_subtitle and subtitle_text or ""
+			mod.subtitle_active = show_subtitle
+
+			local ui_renderer = instance._ui_renderer
+
+			_apply_custom_subtitle_style(widgets_by_name, interface_settings, ui_renderer, subtitle_text)
 		end
 	end
 end
 
-local WwiseGameSyncSettings = require("scripts/settings/wwise_game_sync/wwise_game_sync_settings")
-local HudElementMissionSpeakerPopupDefinitions =
-	require("scripts/ui/hud/elements/mission_speaker_popup/hud_element_mission_speaker_popup_definitions")
-local HudElementMissionSpeakerPopupSettings =
-	require("scripts/ui/hud/elements/mission_speaker_popup/hud_element_mission_speaker_popup_settings")
-local UIWidget = require("scripts/managers/ui/ui_widget")
-local UIHudSettings = require("scripts/settings/ui/ui_hud_settings")
-local UIFontSettings = require("scripts/managers/ui/ui_font_settings")
+mod.updateCheck = function(self, dt)
+	local game_mode_manager = Managers.state and Managers.state.game_mode
+	local game_mode_name = game_mode_manager and game_mode_manager:game_mode_name()
+
+	if not game_mode_manager or game_mode_name ~= "hub" then
+		mod.playing_dialogue = nil
+		mod.game_subtitles_widgets = nil
+		mod.showRadio = false
+		mod.subtitle_active = false
+		return
+	end
+
+	-- Remove dialogue that has now finished
+	if mod.playing_dialogue then
+		local time_now = Managers.time and Managers.time:time("main")
+		local dialogue_complete_time = time_now
+
+		if mod.playing_dialogue.dialogue_timer and mod.playing_dialogue.dialogue_start_time then
+			dialogue_complete_time = mod.playing_dialogue.dialogue_start_time + mod.playing_dialogue.dialogue_timer
+				or mod.playing_dialogue.dialogue_start_time
+		end
+
+		if time_now > dialogue_complete_time then
+			mod.playing_dialogue = nil
+			mod.game_subtitles_widgets = nil
+			mod.showRadio = false
+			mod.subtitle_active = false
+		end
+	end
+
+	local playing_dialogues_array = self._playing_dialogues_array or {}
+
+	if not mod.playing_dialogue and #playing_dialogues_array > 0 then
+		--mod.playing_dialogue = playing_dialogues_array[1]
+	end
+
+	if mod.playing_dialogue and not _is_valid_custom_radio_speaker(mod.playing_dialogue.speaker_name) then
+		mod.playing_dialogue = nil
+		return
+	end
+
+	if mod.playing_dialogue then
+		mod.updateCustomRadio(self, dt)
+		mod.updateCustomSubtitles(self, dt)
+	else
+		mod.showRadio = false
+		mod.subtitle_active = false
+	end
+
+	mod.enabled = mod:is_enabled()
+end
 
 mod.updatetimer = 0
+
+mod.get_game_subtitles_widget = function()
+	local cached = mod.game_subtitles_widgets
+
+	if not (cached and cached.subtitles and cached.subtitles.content) then
+		local ui_manager = Managers and Managers.ui
+		local uce = ui_manager and ui_manager._ui_constant_elements
+		local elem = uce and uce._elements and uce._elements.ConstantElementSubtitles
+		cached = elem and elem._widgets_by_name
+		mod.game_subtitles_widgets = cached
+	end
+
+	return cached
+end
 
 mod.customradio_update_widget = function(name_text, icon, dt)
 	local game_mode_manager = Managers.state and Managers.state.game_mode
@@ -694,7 +796,7 @@ mod.customradio_update_widget = function(name_text, icon, dt)
 			end
 
 			local game_subtitle_text = ""
-			local game_subtitles_widgets = _game_subtitles_widgets_cached()
+			local game_subtitles_widgets = mod.get_game_subtitles_widget()
 			if
 				game_subtitles_widgets
 				and game_subtitles_widgets.subtitles
@@ -705,21 +807,8 @@ mod.customradio_update_widget = function(name_text, icon, dt)
 			local game_subtitles_on = (#game_subtitle_text > 1) or subtitles_enabled == true or subtitles_enabled == 1
 			local show_subtitle = subtitle_text ~= "" and not game_subtitles_on
 
-			_apply_custom_subtitle_style(
-				widgets_by_name,
-				interface_settings,
-				instance and instance._ui_renderer,
-				show_subtitle and subtitle_text or ""
-			)
-
 			widgets_by_name.custom_radio_subtitle.content.custom_radio_subtitle = show_subtitle and subtitle_text or ""
-			widgets_by_name.custom_radio_subtitle.visible = show_subtitle
-
-			local background_widget = widgets_by_name.custom_radio_subtitle_background
-
-			if background_widget then
-				background_widget.visible = show_subtitle
-			end
+			mod.subtitle_active = show_subtitle
 		end
 	end
 end
@@ -750,726 +839,8 @@ mod.update_bar_value = function(instance)
 	instance._previous_bar_index = next_bar_index
 end
 
-local add_definitions = function(definitions)
-	if not definitions then
-		return
-	end
-
-	local UIWorkspaceSettings = require("scripts/settings/ui/ui_workspace_settings")
-
-	definitions.scenegraph_definition = definitions.scenegraph_definition or {}
-	definitions.widget_definitions = definitions.widget_definitions or {}
-	definitions.scenegraph_definition.screen = definitions.scenegraph_definition.screen or UIWorkspaceSettings.screen
-	definitions.scenegraph_definition.custom_radio_canvas = definitions.scenegraph_definition.custom_radio_canvas
-		or {
-			horizontal_alignment = "center",
-			parent = "screen",
-			vertical_alignment = "center",
-			size = {
-				1920,
-				1080,
-			},
-			position = {
-				0,
-				0,
-				99,
-			},
-			visible = false,
-		}
-
-	-- Add custom definition for in-view radio popup
-	local portrait_size = HudElementMissionSpeakerPopupSettings.portrait_size
-
-	local name_text_style = table.clone(UIFontSettings.hud_body)
-
-	name_text_style.horizontal_alignment = "right"
-	name_text_style.vertical_alignment = "top"
-	name_text_style.text_horizontal_alignment = "right"
-	name_text_style.text_vertical_alignment = "bottom"
-	name_text_style.size = {
-		650,
-		40,
-	}
-	name_text_style.offset = {
-		-(portrait_size[1] + 20),
-		15,
-		100,
-	}
-	name_text_style.drop_shadow = true
-	name_text_style.font_size = 24
-
-	local title_text_style = table.clone(name_text_style)
-
-	title_text_style.offset = {
-		-(portrait_size[1] + 20),
-		-10,
-		100,
-	}
-	title_text_style.text_color = UIHudSettings.color_tint_main_2
-
-	definitions.scenegraph_definition.custom_radio_background = {
-		horizontal_alignment = "right",
-		parent = "custom_radio_canvas",
-		visible = false,
-		vertical_alignment = "top",
-		size = portrait_size,
-		position = {
-			-50,
-			300,
-			100,
-		},
-	}
-
-	definitions.widget_definitions.custom_radio_popup = UIWidget.create_definition({
-		{
-			pass_type = "texture",
-			style_id = "custom_radio_portrait",
-			visible = false,
-			value = "content/ui/materials/base/ui_radio_portrait_base",
-			style = {
-				horizontal_alignment = "center",
-				vertical_alignment = "top",
-				offset = {
-					-1,
-					0,
-					99,
-				},
-				color = {
-					255,
-					255,
-					255,
-					255,
-				},
-				material_values = {
-					distortion = 1,
-				},
-			},
-		},
-		{
-			pass_type = "texture",
-			style_id = "custom_radio_frame",
-			visible = false,
-			value = "content/ui/materials/hud/backgrounds/weapon_frame",
-			style = {
-				horizontal_alignment = "right",
-				vertical_alignment = "center",
-				color = UIHudSettings.color_tint_main_3,
-				offset = {
-					0,
-					0,
-					100,
-				},
-				size_addition = {
-					8,
-					5,
-				},
-			},
-		},
-	}, "custom_radio_background")
-
-	definitions.widget_definitions.custom_radio_name_text = UIWidget.create_definition({
-		{
-			pass_type = "text",
-			style_id = "custom_radio_name_text",
-			visible = false,
-			value = "<name_text>",
-			value_id = "custom_radio_name_text",
-			style = name_text_style,
-		},
-	}, "custom_radio_background")
-
-	definitions.widget_definitions.custom_radio_title_text = UIWidget.create_definition({
-		{
-			pass_type = "text",
-			style_id = "custom_radio_title_text",
-			visible = false,
-			value_id = "custom_radio_title_text",
-			value = Localize("loc_mission_speaker_title_text"),
-			style = title_text_style,
-		},
-	}, "custom_radio_background")
-
-	definitions.widget_definitions.custom_radio_radio = UIWidget.create_definition({
-		{
-			pass_type = "texture",
-			style_id = "custom_radio_soundwave",
-			visible = false,
-			value = "content/ui/materials/icons/hud/radio",
-			style = {
-				horizontal_alignment = "left",
-				vertical_alignment = "top",
-				size = {
-					64,
-					32,
-				},
-				offset = {
-					-250,
-					55,
-					100,
-				},
-				color = UIHudSettings.color_tint_main_2,
-			},
-		},
-	}, "custom_radio_background")
-
-	local num_bars = HudElementMissionSpeakerPopupSettings.bar_amount
-
-	for i = 1, num_bars do
-		local name = "custom_radio_bar_" .. i
-
-		definitions.widget_definitions[name] = UIWidget.create_definition({
-			{
-				pass_type = "texture",
-				style_id = "background",
-				visible = false,
-				value = "content/ui/materials/backgrounds/default_square",
-				style = {
-					horizontal_alignment = "center",
-					vertical_alignment = "bottom",
-					size = HudElementMissionSpeakerPopupSettings.bar_size,
-					color = UIHudSettings.color_tint_main_4,
-					offset = {
-						0,
-						0,
-						98,
-					},
-				},
-			},
-			{
-				pass_type = "texture",
-				style_id = "bar",
-				visible = false,
-				value = "content/ui/materials/backgrounds/default_square",
-				style = {
-					horizontal_alignment = "center",
-					vertical_alignment = "bottom",
-					size = HudElementMissionSpeakerPopupSettings.bar_size,
-					color = UIHudSettings.color_tint_main_2,
-					offset = {
-						0,
-						0,
-						99,
-					},
-				},
-			},
-			{
-				pass_type = "texture",
-				style_id = "frame",
-				visible = false,
-				value = "content/ui/materials/frames/line_light",
-				style = {
-					horizontal_alignment = "center",
-					vertical_alignment = "bottom",
-					size = HudElementMissionSpeakerPopupSettings.bar_size,
-					color = UIHudSettings.color_tint_main_3,
-					size_addition = {
-						4,
-						4,
-					},
-					offset = {
-						0,
-						2,
-						100,
-					},
-				},
-			},
-		}, "custom_radio_background")
-	end
-
-	-- Subtitle widget on screens with custom radio
-	definitions.scenegraph_definition.custom_radio_subtitle = definitions.scenegraph_definition.custom_radio_subtitle
-		or {
-			horizontal_alignment = "center",
-			parent = "screen",
-			vertical_alignment = "bottom",
-			size = {
-				800,
-				100,
-			},
-			position = {
-				0,
-				-200,
-				101,
-			},
-			visible = false,
-		}
-
-	local subtitle_text_style = table.clone(UIFontSettings.body)
-
-	subtitle_text_style.horizontal_alignment = "center"
-	subtitle_text_style.vertical_alignment = "center"
-	subtitle_text_style.text_horizontal_alignment = "center"
-	subtitle_text_style.text_vertical_alignment = "center"
-	subtitle_text_style.offset = {
-		0,
-		0,
-		2,
-	}
-	subtitle_text_style.text_color = {
-		255,
-		255,
-		255,
-		255,
-	}
-	subtitle_text_style.size = {
-		800,
-		100,
-	}
-	subtitle_text_style.drop_shadow = true
-
-	definitions.widget_definitions.custom_radio_subtitle = UIWidget.create_definition({
-		{
-			pass_type = "text",
-			style_id = "text",
-			value_id = "custom_radio_subtitle",
-			value = "",
-			style = subtitle_text_style,
-		},
-	}, "custom_radio_subtitle")
-
-	definitions.widget_definitions.custom_radio_subtitle_background = UIWidget.create_definition({
-		{
-			pass_type = "rect",
-			style_id = "rect",
-			style = {
-				color = {
-					180,
-					0,
-					0,
-					0,
-				},
-				horizontal_alignment = "center",
-				vertical_alignment = "center",
-				size = {
-					800,
-					100,
-				},
-			},
-		},
-	}, "custom_radio_subtitle")
-end
-
--- add custom radio widget to specific views (wanted to be able to pick and choose ;))
-mod:hook_require("scripts/ui/views/inventory_view/inventory_view_definitions", function(definitions)
-	add_definitions(definitions)
-end)
-
-mod:hook_require(
-	"scripts/ui/views/inventory_background_view/inventory_background_view_definitions",
-	function(definitions)
-		add_definitions(definitions)
-	end
-)
-
-mod:hook_require("scripts/ui/views/masteries_overview_view/masteries_overview_view_definitions", function(definitions)
-	add_definitions(definitions)
-end)
-
-mod:hook_require("scripts/ui/views/mastery_view/mastery_view_definitions", function(definitions)
-	add_definitions(definitions)
-end)
-
-mod:hook_require("scripts/ui/views/inventory_cosmetics_view/inventory_cosmetics_view_definitions", function(definitions)
-	add_definitions(definitions)
-end)
-
-mod:hook_require("scripts/ui/views/inventory_weapons_view/inventory_weapons_view_definitions", function(definitions)
-	add_definitions(definitions)
-end)
-
-mod:hook_require(
-	"scripts/ui/views/inventory_weapon_cosmetics_view/inventory_weapon_cosmetics_view_definitions",
-	function(definitions)
-		add_definitions(definitions)
-	end
-)
-
-mod:hook_require(
-	"scripts/ui/views/inventory_weapon_details_view/inventory_weapon_details_view_definitions",
-	function(definitions)
-		add_definitions(definitions)
-	end
-)
-
-mod:hook_require(
-	"scripts/ui/views/inventory_weapon_marks_view/inventory_weapon_marks_view_definitions",
-	function(definitions)
-		add_definitions(definitions)
-	end
-)
-
-mod:hook_require("scripts/ui/views/crafting_view/crafting_view_definitions", function(definitions)
-	add_definitions(definitions)
-end)
-
-mod:hook_require(
-	"scripts/ui/views/crafting_mechanicus_barter_items_view/crafting_mechanicus_barter_items_view_definitions",
-	function(definitions)
-		add_definitions(definitions)
-	end
-)
-
-mod:hook_require(
-	"scripts/ui/views/crafting_mechanicus_modify_options_view/crafting_mechanicus_modify_options_view_definitions",
-	function(definitions)
-		add_definitions(definitions)
-	end
-)
-
-mod:hook_require(
-	"scripts/ui/views/crafting_mechanicus_modify_view/crafting_mechanicus_modify_view_definitions",
-	function(definitions)
-		add_definitions(definitions)
-	end
-)
-
-mod:hook_require(
-	"scripts/ui/views/crafting_mechanicus_replace_perk_view/crafting_mechanicus_replace_perk_view_definitions",
-	function(definitions)
-		add_definitions(definitions)
-	end
-)
-
-mod:hook_require(
-	"scripts/ui/views/crafting_mechanicus_replace_trait_view/crafting_mechanicus_replace_trait_view_definitions",
-	function(definitions)
-		add_definitions(definitions)
-	end
-)
-
-mod:hook_require(
-	"scripts/ui/views/crafting_mechanicus_upgrade_expertise_view/crafting_mechanicus_upgrade_expertise_view_definitions",
-	function(definitions)
-		add_definitions(definitions)
-	end
-)
-
-mod:hook_require(
-	"scripts/ui/views/crafting_mechanicus_upgrade_item_view/crafting_mechanicus_upgrade_item_view_definitions",
-	function(definitions)
-		add_definitions(definitions)
-	end
-)
-
-mod:hook_require("scripts/ui/views/cosmetics_vendor_view/cosmetics_vendor_view_definitions", function(definitions)
-	add_definitions(definitions)
-end)
-
-mod:hook_require(
-	"scripts/ui/views/cosmetics_vendor_background_view/cosmetics_vendor_background_view_definitions",
-	function(definitions)
-		add_definitions(definitions)
-	end
-)
-
-mod:hook_require("scripts/ui/views/cosmetics_inspect_view/cosmetics_inspect_view_definitions", function(definitions)
-	add_definitions(definitions)
-end)
-
-mod:hook_require("scripts/ui/views/contracts_view/contracts_view_definitions", function(definitions)
-	add_definitions(definitions)
-end)
-
-mod:hook_require(
-	"scripts/ui/views/contracts_background_view/contracts_background_view_definitions",
-	function(definitions)
-		add_definitions(definitions)
-	end
-)
-
-mod:hook_require("scripts/ui/views/marks_goods_vendor_view/marks_goods_vendor_view_definitions", function(definitions)
-	add_definitions(definitions)
-end)
-
-mod:hook_require("scripts/ui/views/marks_vendor_view/marks_vendor_view_definitions", function(definitions)
-	add_definitions(definitions)
-end)
-
-mod:hook_require(
-	"scripts/ui/views/credits_goods_vendor_view/credits_goods_vendor_view_definitions",
-	function(definitions)
-		add_definitions(definitions)
-	end
-)
-
-mod:hook_require(
-	"scripts/ui/views/credits_vendor_background_view/credits_vendor_background_view_definitions",
-	function(definitions)
-		add_definitions(definitions)
-	end
-)
-
-mod:hook_require("scripts/ui/views/credits_vendor_view/credits_vendor_view_definitions", function(definitions)
-	add_definitions(definitions)
-end)
-
-mod:hook_require("scripts/ui/views/penance_overview_view/penance_overview_view_definitions", function(definitions)
-	add_definitions(definitions)
-end)
-
-mod:hook_require("scripts/ui/views/store_view/store_view_definitions", function(definitions)
-	add_definitions(definitions)
-end)
-
-mod:hook_require("scripts/ui/views/store_item_detail_view/store_item_detail_view_definitions", function(definitions)
-	add_definitions(definitions)
-end)
-
-mod:hook_require("scripts/ui/views/mastery_view/mastery_view_definitions", function(definitions)
-	add_definitions(definitions)
-end)
-
-mod:hook_require("scripts/ui/views/masteries_overview_view/masteries_overview_view_definitions", function(definitions)
-	add_definitions(definitions)
-end)
-
-mod:hook_require("scripts/ui/views/live_events_view/live_events_view_definitions", function(definitions)
-	add_definitions(definitions)
-end)
-
-mod:hook_require(
-	"scripts/ui/views/player_character_options_view/player_character_options_view_definitions",
-	function(definitions)
-		add_definitions(definitions)
-	end
-)
-
-mod:hook_require(
-	"scripts/ui/views/barber_vendor_background_view/barber_vendor_background_view_definitions",
-	function(definitions)
-		add_definitions(definitions)
-	end
-)
-
-mod:hook_require(
-	"scripts/ui/views/character_appearance_view/character_appearance_view_definitions",
-	function(definitions)
-		add_definitions(definitions)
-	end
-)
-
-mod:hook(
-	CLASS.HudElementMissionSpeakerPopup,
-	"_sync_active_speaker",
-	function(orig_func, self, dt, t, ui_renderer, render_settings, input_service)
-		orig_func(self, dt, t, ui_renderer, render_settings, input_service)
-
-		local dialogue = mod.playing_dialogue
-
-		if dialogue then
-			local speaker_name = dialogue.speaker_name
-
-			local needs_start = speaker_name ~= nil and (not self._is_speaking or self._speaker_name ~= speaker_name)
-
-			if needs_start then
-				self._speaker_name = speaker_name
-				self:_mission_speaker_stop()
-				self._is_speaking = false
-
-				local speaker_voice_settings = DialogueSpeakerVoiceSettings[speaker_name]
-				local mission_giver_icon = speaker_voice_settings and speaker_voice_settings.icon
-				local mission_giver_full_name = (speaker_voice_settings and speaker_voice_settings.full_name)
-					or "++REDACTED++"
-				local mission_giver_full_name_localized = self:_localize(mission_giver_full_name)
-
-				self:_mission_speaker_start(
-					mission_giver_full_name_localized,
-					mission_giver_icon or "content/ui/textures/icons/npc_portraits/mission_givers/default"
-				)
-				self._is_speaking = true
-				self._mod_chatter_speaker_active = true
-			end
-		else
-			if self._mod_chatter_speaker_active then
-				self._speaker_name = nil
-				self:_mission_speaker_stop()
-				self._is_speaking = false
-				self._mod_chatter_speaker_active = false
-			end
-		end
-
-		if self._widgets_by_name and self._widgets_by_name.custom_radio_subtitle then
-			local widgets_by_name = self._widgets_by_name
-			local subtitle_text = ""
-
-			local game_mode_manager = Managers.state and Managers.state.game_mode
-			local game_mode_name = game_mode_manager and game_mode_manager:game_mode_name()
-
-			if game_mode_name == "hub" and mod.playing_dialogue and mod:get("show_custom_radio_subtitles") ~= false then
-				local save_data = Managers.save and Managers.save:account_data()
-				local interface_settings = save_data and save_data.interface_settings
-				local subtitles_enabled = interface_settings and interface_settings.subtitle_enabled
-				local speaker_enabled = interface_settings and interface_settings.subtitle_speaker_enabled
-
-				if subtitles_enabled then
-					local dialogue = mod.playing_dialogue
-					local subtitle_key = dialogue.currently_playing_subtitle
-					local speaker_name = dialogue.speaker_name
-
-					local localized_subtitle
-
-					if subtitle_key and subtitle_key ~= "" then
-						local no_cache = true
-						local exists = Managers.localization:exists(subtitle_key)
-
-						if exists then
-							localized_subtitle = self:_localize(subtitle_key, no_cache)
-						end
-					end
-
-					if localized_subtitle and localized_subtitle ~= "" then
-						local speaker_display_name
-
-						if speaker_name then
-							local speaker_voice_settings = DialogueSpeakerVoiceSettings[speaker_name]
-							local short_name = speaker_voice_settings and speaker_voice_settings.short_name
-
-							if short_name then
-								speaker_display_name = self:_localize(short_name)
-							end
-						end
-
-						local subtitle_format_context = {
-							speaker = speaker_display_name,
-							subtitle = localized_subtitle,
-						}
-
-						local format_key = "loc_subtitle_speaker_format"
-
-						if not speaker_enabled or not speaker_display_name then
-							format_key = "loc_subtitle_speaker_format_speakerless"
-							subtitle_format_context.speaker = nil
-						end
-
-						if Managers.localization:exists(format_key) then
-							subtitle_text = self:_localize(format_key, true, subtitle_format_context)
-						else
-							if speaker_display_name then
-								subtitle_text = speaker_display_name .. ": " .. localized_subtitle
-							else
-								subtitle_text = localized_subtitle
-							end
-						end
-					end
-				end
-			end
-
-			widgets_by_name.custom_radio_subtitle.content.custom_radio_subtitle = subtitle_text
-
-			local game_subtitle_text = ""
-			local game_subtitles_widgets = _game_subtitles_widgets_cached()
-			if
-				game_subtitles_widgets
-				and game_subtitles_widgets.subtitles
-				and game_subtitles_widgets.subtitles.content
-			then
-				game_subtitle_text = game_subtitles_widgets.subtitles.content.text or ""
-			end
-			local game_subtitles_on = (#game_subtitle_text > 1) or subtitles_enabled == true or subtitles_enabled == 1
-			local show_subtitle = subtitle_text ~= "" and not game_subtitles_on
-
-			_apply_custom_subtitle_style(
-				widgets_by_name,
-				interface_settings,
-				self._ui_renderer,
-				show_subtitle and subtitle_text or ""
-			)
-
-			widgets_by_name.custom_radio_subtitle.content.custom_radio_subtitle = show_subtitle and subtitle_text or ""
-			widgets_by_name.custom_radio_subtitle.visible = show_subtitle
-
-			local background_widget = widgets_by_name.custom_radio_subtitle_background
-
-			if background_widget then
-				background_widget.visible = show_subtitle
-			end
-		end
-	end
-)
-
-mod:hook_require(
-	"scripts/ui/hud/elements/mission_speaker_popup/hud_element_mission_speaker_popup_definitions",
-	function(definitions)
-		local UIWorkspaceSettings = require("scripts/settings/ui/ui_workspace_settings")
-		local UIFontSettings = require("scripts/managers/ui/ui_font_settings")
-		local UIWidget = require("scripts/managers/ui/ui_widget")
-
-		definitions.scenegraph_definition = definitions.scenegraph_definition or {}
-		definitions.scenegraph_definition.custom_radio_subtitle = definitions.scenegraph_definition.custom_radio_subtitle
-			or {
-				horizontal_alignment = "center",
-				parent = "screen",
-				vertical_alignment = "bottom",
-				size = {
-					800,
-					100,
-				},
-				position = {
-					0,
-					-200,
-					999,
-				},
-				visible = false,
-			}
-
-		local subtitle_text_style = table.clone(UIFontSettings.body)
-
-		subtitle_text_style.horizontal_alignment = "center"
-		subtitle_text_style.vertical_alignment = "center"
-		subtitle_text_style.text_horizontal_alignment = "center"
-		subtitle_text_style.text_vertical_alignment = "center"
-		subtitle_text_style.offset = {
-			0,
-			0,
-			2,
-		}
-		subtitle_text_style.text_color = {
-			255,
-			255,
-			255,
-			255,
-		}
-		subtitle_text_style.size = {
-			800,
-			100,
-		}
-		subtitle_text_style.drop_shadow = true
-
-		definitions.widget_definitions = definitions.widget_definitions or {}
-		definitions.widget_definitions.custom_radio_subtitle = UIWidget.create_definition({
-			{
-				pass_type = "text",
-				style_id = "text",
-				value_id = "custom_radio_subtitle",
-				value = "",
-				style = subtitle_text_style,
-			},
-		}, "custom_radio_subtitle")
-
-		definitions.widget_definitions.custom_radio_subtitle_background = UIWidget.create_definition({
-			{
-				pass_type = "rect",
-				style_id = "rect",
-				style = {
-					color = {
-						180,
-						0,
-						0,
-						0,
-					},
-					horizontal_alignment = "center",
-					vertical_alignment = "center",
-					size = {
-						800,
-						100,
-					},
-				},
-			},
-		}, "custom_radio_subtitle")
-	end
-)
-
 -- HUD rendering whenever custom chatter is playing
+
 mod:hook(
 	CLASS.HudElementMissionSpeakerPopup,
 	"_draw_widgets",
@@ -1490,6 +861,7 @@ mod:hook(
 			return
 		end
 
+		--[[
 		local dialogue = mod.playing_dialogue
 
 		local base_radio_active = self._is_speaking and not self._mod_chatter_speaker_active
@@ -1520,91 +892,7 @@ mod:hook(
 			self:_mission_speaker_stop()
 			self._is_speaking = false
 			self._mod_chatter_speaker_active = false
-		end
-
-		-- Update HUD subtitle widget
-		if self._widgets_by_name and self._widgets_by_name.custom_radio_subtitle then
-			local widgets_by_name = self._widgets_by_name
-			local subtitle_text = ""
-
-			if dialogue and mod:get("show_custom_radio_subtitles") ~= false then
-				local save_data = Managers.save and Managers.save:account_data()
-				local interface_settings = save_data and save_data.interface_settings
-				local subtitles_enabled = interface_settings and interface_settings.subtitle_enabled
-				local speaker_enabled = interface_settings and interface_settings.subtitle_speaker_enabled
-
-				if subtitles_enabled then
-					local subtitle_key = dialogue.currently_playing_subtitle
-					local speaker_name = dialogue.speaker_name
-
-					local localized_subtitle
-
-					if subtitle_key and subtitle_key ~= "" and Managers.localization:exists(subtitle_key) then
-						localized_subtitle = self:_localize(subtitle_key, true)
-					end
-
-					if localized_subtitle and localized_subtitle ~= "" then
-						local speaker_display_name
-
-						if speaker_name then
-							local speaker_voice_settings = DialogueSpeakerVoiceSettings[speaker_name]
-							local short_name = speaker_voice_settings and speaker_voice_settings.short_name
-
-							if short_name then
-								speaker_display_name = self:_localize(short_name)
-							end
-						end
-
-						local subtitle_format_context = {
-							speaker = speaker_display_name,
-							subtitle = localized_subtitle,
-						}
-
-						local format_key = "loc_subtitle_speaker_format"
-
-						if not speaker_enabled or not speaker_display_name then
-							format_key = "loc_subtitle_speaker_format_speakerless"
-							subtitle_format_context.speaker = nil
-						end
-
-						if Managers.localization:exists(format_key) then
-							subtitle_text = self:_localize(format_key, true, subtitle_format_context)
-						else
-							if speaker_display_name then
-								subtitle_text = speaker_display_name .. ": " .. localized_subtitle
-							else
-								subtitle_text = localized_subtitle
-							end
-						end
-					end
-				end
-			end
-
-			widgets_by_name.custom_radio_subtitle.content.custom_radio_subtitle = subtitle_text
-
-			local game_subtitle_text = ""
-			local game_subtitles_widgets = _game_subtitles_widgets_cached()
-			if
-				game_subtitles_widgets
-				and game_subtitles_widgets.subtitles
-				and game_subtitles_widgets.subtitles.content
-			then
-				game_subtitle_text = game_subtitles_widgets.subtitles.content.text or ""
-			end
-			local game_subtitles_on = (#game_subtitle_text > 1) or subtitles_enabled == true or subtitles_enabled == 1
-			local show_subtitle = subtitle_text ~= "" and not game_subtitles_on
-
-			_apply_custom_subtitle_style(
-				widgets_by_name,
-				interface_settings,
-				ui_renderer,
-				show_subtitle and subtitle_text or ""
-			)
-
-			widgets_by_name.custom_radio_subtitle.content.custom_radio_subtitle = show_subtitle and subtitle_text or ""
-			widgets_by_name.custom_radio_subtitle.visible = show_subtitle
-			widgets_by_name.custom_radio_subtitle_background.visible = show_subtitle
-		end
+		end]]
 
 		orig(self, dt, t, input_service, ui_renderer, render_settings)
 	end

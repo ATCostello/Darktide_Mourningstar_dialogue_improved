@@ -45,6 +45,7 @@ return {
 						default_value = true,
 						tooltip = "show_custom_radio_subtitles_tooltip",
 					},
+					--[[
 					{
 						setting_id = "mourningstar_chatter_spacing",
 						type = "numeric",
@@ -52,7 +53,7 @@ return {
 						range = { 1, 60 },
 						decimals_number = 2,
 						tooltip = "mourningstar_chatter_spacing_tooltip",
-					},
+					},]]
 				},
 			},
 		},
