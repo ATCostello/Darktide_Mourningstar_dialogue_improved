@@ -437,7 +437,7 @@ DialogueSystem._play_dialogue_event_implementation = function(
 		mod.playing_dialogue = dialogue
 	end
 
-	table.insert(mod.past_dialogue, dialogue)
+	--table.insert(mod.past_dialogue, dialogue)
 
 	local sequence_table = dialogue.dialogue_sequence
 
