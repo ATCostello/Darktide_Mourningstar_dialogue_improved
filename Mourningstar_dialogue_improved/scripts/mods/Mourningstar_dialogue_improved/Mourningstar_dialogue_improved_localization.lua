@@ -1,5 +1,5 @@
 local mod = get_mod("Mourningstar_dialogue_improved")
-mod.version = "1.3.3"
+mod.version = "1.3.4"
 mod:info("Mourningstar Dialogue Improved is installed, using version: " .. tostring(mod.version))
 
 local colours = {
@@ -230,6 +230,33 @@ mod.localisation = {
 		ru = "Регулирует время между репликами окружающих в Звезде Скорби.",
 		["zh-cn"] = "控制哀星号环境中对话之间的间隔时间。",
 		["zh-tw"] = "控制哀星號環境對白之間的間隔時間。",
+	},
+	disable_mission_update_chatter = {
+		en = "Disable mourningstar mission terminal updates?",
+	},
+	disable_mission_update_chatter_tooltip = {
+		en = "Toggles the notifications from the servitor about mission terminal updates. These are the voiceovers that tell you new missions are available. If this setting is enabled, these will no longer play in menus - and you will only get the conversational/lore updates.",
+	},
+	disable_vocator_updates = {
+		en = "Disable mourningstar vocator updates?",
+	},
+	disable_vocator_updates_tooltip = {
+		en = "Toggles general voiceovers from vocators, these tend to not include any lore/conversations, and are just general hub stuff.",
+	},
+	General = {
+		en = "General",
+	},
+	Mourningstar = {
+		en = "Mourningstar",
+	},
+	inmission = {
+		en = "In-Mission",
+	},
+	mourningstar_settings = {
+		en = "{#color(" .. colours.title .. ")}Mourningstar Settings{#reset()}",
+	},
+	inmission_settings = {
+		en = "{#color(" .. colours.title .. ")}In-Mission Settings{#reset()}",
 	},
 }
 mod.toggle_pizazz = function()

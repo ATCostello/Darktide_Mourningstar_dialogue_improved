@@ -6,11 +6,10 @@ return {
 	is_togglable = true,
 	options = {
 		widgets = {
-
 			{
 				setting_id = "general_settings",
 				type = "group",
-
+				tab = mod:localize("General"),
 				sub_widgets = {
 					{
 						setting_id = "mod_name_pizazz_toggle",
@@ -19,12 +18,46 @@ return {
 						tooltip = "mod_name_pizazz_tooltip",
 					},
 					{
+						setting_id = "show_custom_radio_subtitles",
+						type = "checkbox",
+						default_value = true,
+						tooltip = "show_custom_radio_subtitles_tooltip",
+					},
+				},
+			},
+			{
+				setting_id = "mourningstar_settings",
+				type = "group",
+				tab = mod:localize("Mourningstar"),
+				sub_widgets = {
+					{
 
 						setting_id = "disable_mourningstar_chatter",
 						type = "checkbox",
 						default_value = false,
 						tooltip = "disable_mourningstar_chatter_tooltip",
 					},
+					{
+
+						setting_id = "disable_mission_update_chatter",
+						type = "checkbox",
+						default_value = false,
+						tooltip = "disable_mission_update_chatter_tooltip",
+					},
+					{
+
+						setting_id = "disable_vocator_updates",
+						type = "checkbox",
+						default_value = false,
+						tooltip = "disable_vocator_updates_tooltip",
+					},
+				},
+			},
+			{
+				setting_id = "inmission_settings",
+				type = "group",
+				tab = mod:localize("inmission"),
+				sub_widgets = {
 					{
 
 						setting_id = "disable_radio_chatter",
@@ -39,12 +72,7 @@ return {
 						default_value = false,
 						tooltip = "disable_all_chatter_tooltip",
 					},
-					{
-						setting_id = "show_custom_radio_subtitles",
-						type = "checkbox",
-						default_value = true,
-						tooltip = "show_custom_radio_subtitles_tooltip",
-					},
+
 					--[[
 					{
 						setting_id = "mourningstar_chatter_spacing",

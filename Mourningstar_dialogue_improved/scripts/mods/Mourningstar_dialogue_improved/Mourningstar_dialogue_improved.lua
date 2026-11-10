@@ -52,17 +52,6 @@ local function _dialogue_extension()
 	return dialogue_extension
 end
 
-local function _rule_concept(rule)
-	local criterias = rule and rule.criterias
-	local first_criteria = criterias and criterias[1]
-
-	return first_criteria and first_criteria[4]
-end
-
-local function _is_heard_speak_rule(rule)
-	return _rule_concept(rule) == "heard_speak"
-end
-
 local function _game_time()
 	local time_manager = Managers and Managers.time
 
@@ -77,7 +66,44 @@ local function _game_time()
 	end
 end
 
+local function should_disable_and_is_vocator(dialogue)
+	if
+		dialogue.category
+		and dialogue.category ~= "npc_prio_0"
+		and dialogue.speaker_name
+		and (string.match(dialogue.speaker_name, "vocator_[a-z]") or string.match(
+			dialogue.speaker_name,
+			"mourningstar_servitor_[a-z]"
+		))
+		and mod:get("disable_vocator_updates")
+	then
+		return true
+	else
+		return false
+	end
+	return false
+end
+
+local function should_disable_and_is_mission_update(dialogue)
+	if
+		dialogue.category
+		and dialogue.category == "npc_prio_0"
+		and dialogue.speaker_name
+		and string.match(dialogue.speaker_name, "mourningstar_servitor_[a-z]")
+		and mod:get("disable_mission_update_chatter")
+	then
+		return true
+	else
+		return false
+	end
+	return false
+end
+
 local function _play_selected_sound_event(self, extension, sound_event, dialogue)
+	if dialogue and dialogue.skipped then
+		return
+	end
+
 	custom_extension = _dialogue_extension()
 
 	-- Do not play dialogue if the player is in a cutscene. (prevents overlapping audio issues)
@@ -107,6 +133,9 @@ local function _play_selected_sound_event(self, extension, sound_event, dialogue
 			sound_event = sound_event,
 			wwise_route = wwise_route,
 		}
+
+		dialogue.vo_event = vo_event
+		dialogue.audible_in_menu = true -- custom variable to show it's using my own playback route
 
 		custom_extension:play_event(vo_event)
 	end
@@ -149,6 +178,7 @@ mod.updateCustomRadio = function(self, dt)
 	end
 end
 
+mod.past_dialogue = {}
 DialogueSystem._play_dialogue_event_implementation = function(
 	self,
 	go_id,
@@ -211,26 +241,14 @@ DialogueSystem._play_dialogue_event_implementation = function(
 	local rule = self._tagquery_database:get_rule(dialogue_rule_index)
 
 	if rule and self._heard_speak_disabled then
-		if _rule_concept(rule) == "heard_speak" then
-			--return
+		local concept = rule.criterias[1][4]
+
+		if concept == "heard_speak" then
+			return
 		else
 			self._heard_speak_disabled = false
 		end
 	end
-
-	--[[if game_mode_name == "hub" and rule and not _is_heard_speak_rule(rule) then
-		local spacing = mod:get("mourningstar_chatter_spacing")
-
-		if spacing then
-			local now = _game_time()
-
-			if now and mod._last_hub_chatter_time and (now - mod._last_hub_chatter_time) < spacing then
-				return
-			end
-
-			mod._last_hub_chatter_time = now
-		end
-	end]]
 
 	local is_currently_playing_dialogue = extension:is_currently_playing_dialogue()
 
@@ -279,6 +297,60 @@ DialogueSystem._play_dialogue_event_implementation = function(
 			return
 		end
 
+		local skip_menu_inclusion = false
+		local instance = Managers.ui:view_instance(Managers.ui:active_top_view())
+
+		local distance_culled_wwise_routes = DialogueSettings.distance_culled_wwise_routes
+		local subtitle_distance = distance_culled_wwise_routes[wwise_route_key]
+
+		if subtitle_distance then
+			dialogue.subtitle_distance = subtitle_distance
+			dialogue.is_audible = self:is_dialogue_audible(dialogue_actor_unit, dialogue)
+		else
+			dialogue.is_audible = true
+		end
+
+		if instance and not skip_menu_inclusion and not dialogue.is_audible then
+			skip_menu_inclusion = true
+			dialogue.skip_reason = "Inaudible"
+		end
+
+		if
+			instance
+			and not skip_menu_inclusion
+			and dialogue.speaker_name
+			and string.match(dialogue.speaker_name, "\\w_vendor_[a-z]")
+		then
+			skip_menu_inclusion = true
+			dialogue.skip_reason = "Skip vendor chatter"
+		end
+
+		if
+			instance
+			and not skip_menu_inclusion
+			and dialogue.category
+			and dialogue.category == "npc_prio_0"
+			and dialogue.speaker_name
+			and not string.match(dialogue.speaker_name, "mourningstar_servitor_[a-z]")
+		then
+			skip_menu_inclusion = true
+			dialogue.skip_reason = "Skip general chatter"
+		end
+
+		-- skip mission terminal updates
+		if instance and not skip_menu_inclusion and should_disable_and_is_mission_update(dialogue) then
+			skip_menu_inclusion = true
+			dialogue.skip_reason = "Disable mission updates setting"
+		end
+
+		-- skip vocator
+		if instance and not skip_menu_inclusion and should_disable_and_is_vocator(dialogue) then
+			skip_menu_inclusion = true
+			dialogue.skip_reason = "Disable Vocator setting"
+		end
+
+		dialogue.skipped = skip_menu_inclusion
+
 		if rule and (rule.pre_wwise_event or rule.post_wwise_event) then
 			dialogue.dialogue_sequence = self:_create_sequence_events_table(
 				rule.pre_wwise_event,
@@ -288,10 +360,14 @@ DialogueSystem._play_dialogue_event_implementation = function(
 			)
 
 			-- If player is in the hub, then change the source of the sound
-			local instance = Managers.ui:view_instance(Managers.ui:active_top_view())
 			local game_mode_name = Managers.state.game_mode:game_mode_name()
 
-			if game_mode_name == "hub" then
+			if
+				instance
+				and game_mode_name == "hub"
+				and not should_disable_and_is_mission_update(dialogue)
+				and not should_disable_and_is_vocator(dialogue)
+			then
 				dialogue.currently_playing_event_id = _play_selected_sound_event(self, extension, sound_event, dialogue)
 			else
 				dialogue.currently_playing_event_id = extension:play_event(dialogue.dialogue_sequence[1])
@@ -307,24 +383,29 @@ DialogueSystem._play_dialogue_event_implementation = function(
 				wwise_route = wwise_route,
 			}
 
-			dialogue.currently_playing_event_id = extension:play_event(vo_event)
+			if
+				instance
+				and game_mode_name == "hub"
+				and not should_disable_and_is_mission_update(dialogue)
+				and not should_disable_and_is_vocator(dialogue)
+			then
+				dialogue.currently_playing_event_id = _play_selected_sound_event(self, extension, sound_event, dialogue)
+			else
+				dialogue.currently_playing_event_id = extension:play_event(vo_event)
+			end
+
 			is_sequence = false
+		end
+
+		if instance and not skip_menu_inclusion and dialogue and not dialogue.audible_in_menu then
+			skip_menu_inclusion = true
+			dialogue.skip_reason = "Inaudible in menus"
 		end
 
 		local concurrent_wwise_event = rule and rule.concurrent_wwise_event
 
 		if concurrent_wwise_event then
 			dialogue.concurrent_wwise_event_id = self:play_wwise_event(extension, concurrent_wwise_event)
-		end
-
-		local distance_culled_wwise_routes = DialogueSettings.distance_culled_wwise_routes
-		local subtitle_distance = distance_culled_wwise_routes[wwise_route_key]
-
-		if subtitle_distance then
-			dialogue.subtitle_distance = subtitle_distance
-			dialogue.is_audible = self:is_dialogue_audible(dialogue_actor_unit, dialogue)
-		else
-			dialogue.is_audible = true
 		end
 
 		local animation_event = "start_talking"
@@ -346,16 +427,19 @@ DialogueSystem._play_dialogue_event_implementation = function(
 	table.insert(self._playing_dialogues_array, 1, dialogue)
 
 	dialogue.dialogue_start_time = Managers.time and Managers.time:time("main")
-	mod.playing_dialogue = dialogue
+
+	if skip_menu_inclusion or dialogue.skipped then
+		--mod:echo("skipped")
+	else
+		mod.playing_dialogue = dialogue
+	end
+
+	--table.insert(mod.past_dialogue, dialogue)
 
 	local sequence_table = dialogue.dialogue_sequence
 
 	if sequence_table ~= nil and sequence_table[1].type == "vorbis_external" or not is_sequence then
 		self._dialogue_system_subtitle:add_playing_localized_dialogue(speaker_name, dialogue)
-	end
-
-	if game_mode_name == "hub" and is_sequence == true then
-		mod.updateCustomRadio(self)
 	end
 end
 
@@ -444,7 +528,7 @@ mod:hook_safe(CLASS.DialogueSystem, "update", function(self, context, dt, t)
 		return
 	end
 
-	self._next_update = t + 0.1
+	self._next_update = t + 0.25
 
 	mod.updateCheck(self, dt)
 
