@@ -244,7 +244,9 @@ DialogueSystem._play_dialogue_event_implementation = function(
 		local concept = rule.criterias[1][4]
 
 		if concept == "heard_speak" then
-			return
+			if game_mode_name ~= "hub" then
+				return
+			end
 		else
 			self._heard_speak_disabled = false
 		end
@@ -318,8 +320,9 @@ DialogueSystem._play_dialogue_event_implementation = function(
 		if
 			instance
 			and not skip_menu_inclusion
-			and dialogue.speaker_name
-			and string.match(dialogue.speaker_name, "\\w_vendor_[a-z]")
+			and sound_event
+			and sound_event
+			and string.match(sound_event, ".concourse_exchange.")
 		then
 			skip_menu_inclusion = true
 			dialogue.skip_reason = "Skip vendor chatter"
@@ -434,7 +437,7 @@ DialogueSystem._play_dialogue_event_implementation = function(
 		mod.playing_dialogue = dialogue
 	end
 
-	--table.insert(mod.past_dialogue, dialogue)
+	table.insert(mod.past_dialogue, dialogue)
 
 	local sequence_table = dialogue.dialogue_sequence
 
@@ -726,8 +729,6 @@ mod.updateCheck = function(self, dt)
 	mod.enabled = mod:is_enabled()
 end
 
-mod.updatetimer = 0
-
 mod.get_game_subtitles_widget = function()
 	local cached = mod.game_subtitles_widgets
 
@@ -790,16 +791,7 @@ mod.customradio_update_widget = function(name_text, icon, dt)
 
 			instance._bar_widgets = bar_widgets
 
-			if mod.updatetimer > 1 then
-				mod.update_bar_value(instance)
-				mod.updatetimer = 0
-			else
-				if dt then
-					mod.updatetimer = mod.updatetimer + (dt * 3)
-				else
-					mod.updatetimer = mod.updatetimer + 0.1
-				end
-			end
+			mod.update_bar_value(instance)
 		end
 	elseif instance then
 		local widgets_by_name = instance._widgets_by_name
